@@ -390,6 +390,23 @@ function loadDB(){
 }
 function saveDB(){ localStorage.setItem(DB_KEY, JSON.stringify(db)); }
 let db = loadDB();
+
+/* Migração: cada série agora carrega seu próprio "kind" (direta / myo-main / myo-sub),
+   permitindo misturar séries diretas e blocos de myo-reps dentro do mesmo exercício. */
+function normalizeSetsForExercise(ex){
+  if(!ex.sets) ex.sets = [];
+  const missingKind = ex.sets.some(s => !s.kind);
+  if(missingKind){
+    if(ex.type === 'myo-reps'){
+      ex.sets.forEach((s,i)=>{ if(!s.kind) s.kind = (i===0 ? 'myo-main' : 'myo-sub'); });
+    } else {
+      ex.sets.forEach(s=>{ if(!s.kind) s.kind = 'direta'; });
+    }
+  }
+}
+(db.workouts||[]).forEach(w => (w.exercises||[]).forEach(normalizeSetsForExercise));
+(db.sessions||[]).forEach(s => (s.exercises||[]).forEach(normalizeSetsForExercise));
+
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
 if ("serviceWorker" in navigator) {
@@ -585,7 +602,7 @@ document.getElementById('confirm-new-exercise').addEventListener('click', ()=>{
   const name = document.getElementById('input-exercise-name').value.trim();
   if(!name || !pendingExerciseWorkoutId) return;
   const w = db.workouts.find(w=>w.id===pendingExerciseWorkoutId);
-  w.exercises.push({ id: uid(), name, type: 'direta', sets: [{reps:'',weight:'',done:false}] });
+  w.exercises.push({ id: uid(), name, type: 'direta', sets: [{reps:'',weight:'',done:false,kind:'direta'}] });
   saveDB();
   hideModal('modal-new-exercise');
   openWorkoutDetail(pendingExerciseWorkoutId);
@@ -636,42 +653,42 @@ function openWorkoutDetail(workoutId){
   const lastSession = lastSessionFor(workoutId);
 
   let exHtml = w.exercises.map(ex=>{
+    normalizeSetsForExercise(ex);
     const lastData = lastSession ? findExerciseInSession(lastSession, ex.id) : null;
-    const isMyo = ex.type === 'myo-reps';
 
     let setsHtml = ex.sets.map((s,i)=>{
       const lastSet = lastData && lastData.sets[i] ? lastData.sets[i] : null;
       const inSession = !!activeSession;
-      const isLockedSet = isMyo && i > 0;
-      
-      let placeholderW = (lastSet && lastSet.weight) ? lastSet.weight + 'kg' : 'kg';
-      let placeholderR = (lastSet && lastSet.reps) ? lastSet.reps + 'reps' : 'reps';
+      const isMain = s.kind === 'myo-main';
+      const isSub = s.kind === 'myo-sub';
+      const isLockedSet = isSub; // peso do bloco é sempre igual ao da série principal do grupo
 
-      if (isMyo) {
-        if (i === 0) {
-            placeholderW = (lastSet && lastSet.weight) ? lastSet.weight + 'kg' : 'Ativação';
-            placeholderR = (lastSet && lastSet.reps) ? lastSet.reps + 'reps' : '4-6 rp';
-        } else {
-            placeholderW = 'Travado';
-            placeholderR = '2 rp';
-        }
+      let placeholderW, placeholderR;
+      if (isMain || isSub) {
+        // Registro esmaecido do último treino nesse mesmo bloco; se não foi feito, mostra só "-"
+        placeholderW = (lastSet && lastSet.weight) ? lastSet.weight + 'kg' : '-';
+        placeholderR = (lastSet && lastSet.reps) ? lastSet.reps + 'rp' : '-';
+      } else {
+        placeholderW = (lastSet && lastSet.weight) ? lastSet.weight + 'kg' : 'kg';
+        placeholderR = (lastSet && lastSet.reps) ? lastSet.reps + 'reps' : 'reps';
       }
 
       const hasNote = !!(s.note && s.note.trim());
       return `
-      <div class="set-row ${s.done?'done':''}" data-ex="${ex.id}" data-set="${i}">
-        <span class="idx">${i+1}</span>
+      <div class="set-row ${s.done?'done':''} ${isSub?'sub-row':''}" data-ex="${ex.id}" data-set="${i}">
+        <span class="idx">${isSub ? '↳' : (i+1)}</span>
         <div class="ghost-input-wrap">
           <input type="number" placeholder="${placeholderW}" value="${s.weight}" class="set-weight ghost-input" ${s.done || isLockedSet ? 'disabled' : ''}>
         </div>
         <div class="ghost-input-wrap">
           <input type="number" placeholder="${placeholderR}" value="${s.reps}" class="set-reps ghost-input" ${s.done ? 'disabled' : ''}>
         </div>
+        ${isMain ? `<span class="pill" style="color:var(--accent); border-color:var(--accent); background:rgba(255,107,0,0.1); font-size:10px; padding:2px 6px;">Myo</span>` : ''}
         ${inSession ? `<button class="check-set-btn ${s.done?'checked':''}" title="Concluir série">✓</button>` : ''}
         <button class="icon-btn note-btn btn-toggle-note ${hasNote?'has-note':''}" title="Observação (RPE, falha, etc)">
           ${noteIcon}
         </button>
-        <button class="icon-btn btn-del-set" title="Excluir série" ${isMyo ? 'style="display:none;"' : ''}>
+        <button class="icon-btn btn-del-set" title="${isMain ? 'Excluir bloco de myo-reps' : 'Excluir série'}">
           ${trashIcon}
         </button>
       </div>
@@ -688,21 +705,17 @@ function openWorkoutDetail(workoutId){
       <div class="exercise-header">
         <div>
           <h3 style="display:inline-block; margin-0;">${escapeHtml(ex.name)}</h3>
-          ${isMyo ? `<span class="pill" style="color:var(--accent); border-color:var(--accent); background:rgba(255,107,0,0.1)">Myo-reps</span>` : ''}
         </div>
         <div style="display:flex; align-items:center; gap:4px;">
-          <button class="dots-btn" title="Opções do exercício">⋮</button>
-          <div class="dropdown-menu">
-            <button class="dropdown-item btn-toggle-type" data-type="direta">${ex.type === 'direta' ? '✓ ' : ''}Série Direta</button>
-            <button class="dropdown-item btn-toggle-type" data-type="myo-reps">${ex.type === 'myo-reps' ? '✓ ' : ''}Myo-reps</button>
-            <hr style="border:0; border-top:1px solid var(--border); margin:6px 0;">
-            <button class="dropdown-item btn-del-ex" style="color:var(--accent2);">${trashIcon} <span style="margin-left:8px;">Remover Ex.</span></button>
-          </div>
+          <button class="icon-btn btn-del-ex" title="Remover exercício" style="color:var(--accent2);">${trashIcon}</button>
         </div>
       </div>
       ${lastSession ? `<div class="last-time">Comparando com o histórico de ${formatDate(lastSession.startedAt)}</div>` : `<div class="last-time">Sem histórico anterior.</div>`}
       <div class="sets-container">${setsHtml}</div>
-      <button class="btn secondary btn-sm btn-add-set" style="margin-top:8px; ${isMyo ? 'display:none;' : ''}">+ Série</button>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="btn secondary btn-sm btn-add-set" style="flex:1;">+ Série</button>
+        <button class="btn secondary btn-sm btn-add-myo" style="flex:1; color:var(--accent); border-color:rgba(255,107,0,0.35);">+ Myo-reps</button>
+      </div>
     </div>`;
   }).join('');
 
@@ -772,7 +785,7 @@ function openWorkoutDetail(workoutId){
           id: uid(),
           name: ex.name,
           type: ex.type || 'direta',
-          sets: ex.sets.map(s => ({ weight: s.weight, reps: s.reps, note: s.note || '', done: false }))
+          sets: ex.sets.map(s => ({ weight: s.weight, reps: s.reps, note: s.note || '', done: false, kind: s.kind || 'direta' }))
         }))
       };
       db.workouts.push(copy);
@@ -829,42 +842,24 @@ function bindExerciseEvents(w){
     document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.remove('show'));
   });
 
-  document.querySelectorAll('.btn-toggle-type').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const block = e.target.closest('.exercise-block');
-      const exId = block.dataset.exId;
-      const targetType = e.target.dataset.type;
-      const ex = w.exercises.find(x=>x.id===exId);
-      
-      ex.type = targetType;
-      if(targetType === 'myo-reps') {
-        const baseWeight = ex.sets[0]?.weight || '';
-        while(ex.sets.length < 6) {
-          ex.sets.push({reps: '', weight: baseWeight, done: false});
-        }
-        ex.sets = ex.sets.slice(0, 6);
-        for(let i=1; i<6; i++) ex.sets[i].weight = baseWeight;
-      }
-      saveDB();
-      openWorkoutDetail(w.id);
-    });
-  });
-
   document.querySelectorAll('#exercises-container .set-weight, #exercises-container .set-reps').forEach(inp=>{
     inp.addEventListener('input', e=>{
       const row = e.target.closest('.set-row');
       const block = e.target.closest('.exercise-block');
       const exId = row.dataset.ex, idx = +row.dataset.set;
       const ex = w.exercises.find(x=>x.id===exId);
-      
+
       if(e.target.classList.contains('set-weight')) {
         ex.sets[idx].weight = e.target.value;
-        if(ex.type === 'myo-reps' && idx === 0) {
+        // Se essa série é o "main" de um bloco myo-reps, espelha o peso pros blocos (sub) seguintes do mesmo grupo
+        if(ex.sets[idx].kind === 'myo-main') {
           const currentVal = e.target.value;
-          for(let sIdx = 1; sIdx < 6; sIdx++) {
+          let sIdx = idx + 1;
+          while(sIdx < ex.sets.length && ex.sets[sIdx].kind === 'myo-sub') {
             ex.sets[sIdx].weight = currentVal;
-            const subRow = block.querySelector(`.set-row[data-set="${sIdx}"] .set-weight`);
-            if(subRow) subRow.value = currentVal;
+            const subInput = block.querySelector(`.set-row[data-set="${sIdx}"] .set-weight`);
+            if(subInput) subInput.value = currentVal;
+            sIdx++;
           }
         }
       } else {
@@ -910,9 +905,10 @@ function bindExerciseEvents(w){
       if(navigator.vibrate) navigator.vibrate(10);
       
       if(ex.sets[idx].done) {
-        if(ex.type === 'myo-reps') {
-          let duration = (idx === 0) ? 40 : 20;
-          if(idx < 5) startInlineTimer(exId, idx, duration, ex.name);
+        const kind = ex.sets[idx].kind;
+        if(kind === 'myo-main' || kind === 'myo-sub') {
+          let duration = (kind === 'myo-main') ? 40 : 20;
+          startInlineTimer(exId, idx, duration, ex.name);
         } else {
           startInlineTimer(exId, idx, 90, ex.name);
         }
@@ -927,7 +923,21 @@ function bindExerciseEvents(w){
       const block = e.target.closest('.exercise-block');
       const exId = block.dataset.exId;
       const ex = w.exercises.find(x=>x.id===exId);
-      ex.sets.push({reps:'',weight:'',done:false});
+      ex.sets.push({reps:'',weight:'',done:false,note:'',kind:'direta'});
+      saveDB();
+      openWorkoutDetail(w.id);
+    });
+  });
+
+  document.querySelectorAll('.btn-add-myo').forEach(btn=>{
+    btn.addEventListener('click', e=>{
+      const block = e.target.closest('.exercise-block');
+      const exId = block.dataset.exId;
+      const ex = w.exercises.find(x=>x.id===exId);
+      ex.sets.push({reps:'',weight:'',done:false,note:'',kind:'myo-main'});
+      for(let k=0;k<5;k++){
+        ex.sets.push({reps:'',weight:'',done:false,note:'',kind:'myo-sub'});
+      }
       saveDB();
       openWorkoutDetail(w.id);
     });
@@ -937,10 +947,20 @@ function bindExerciseEvents(w){
     btn.addEventListener('click', e=>{
       const row = e.target.closest('.set-row');
       const exId = row.dataset.ex, idx = +row.dataset.set;
-      showConfirm('Excluir Série', 'Tem certeza que deseja excluir esta série? Essa ação não pode ser desfeita.', () => {
-        const ex = w.exercises.find(x=>x.id===exId);
-        ex.sets.splice(idx,1);
-        if(ex.sets.length===0) ex.sets.push({reps:'',weight:'',done:false});
+      const ex = w.exercises.find(x=>x.id===exId);
+      const isMainSet = ex.sets[idx].kind === 'myo-main';
+      const msg = isMainSet
+        ? 'Tem certeza que deseja excluir este bloco de myo-reps (série principal + subséries)? Essa ação não pode ser desfeita.'
+        : 'Tem certeza que deseja excluir esta série? Essa ação não pode ser desfeita.';
+      showConfirm('Excluir Série', msg, () => {
+        if(isMainSet) {
+          let end = idx;
+          while(end + 1 < ex.sets.length && ex.sets[end + 1].kind === 'myo-sub') end++;
+          ex.sets.splice(idx, end - idx + 1);
+        } else {
+          ex.sets.splice(idx, 1);
+        }
+        if(ex.sets.length===0) ex.sets.push({reps:'',weight:'',done:false,note:'',kind:'direta'});
         saveDB();
         openWorkoutDetail(w.id);
       });
@@ -1130,21 +1150,11 @@ function finishCurrentWorkout(){
   const startedAt = db.activeSession.startedAt;
 
   const dynamicProcessedExercises = w.exercises.map(ex => {
-    let finalSets = [...ex.sets];
-    if(ex.type === 'myo-reps') {
-      let lastValidIndex = 0;
-      for (let i = 0; i < finalSets.length; i++) {
-        if (finalSets[i].done && finalSets[i].reps !== '') {
-          lastValidIndex = i;
-        }
-      }
-      finalSets = finalSets.slice(0, lastValidIndex + 1);
-    }
     return {
       exerciseId: ex.id,
       exerciseName: ex.name,
       type: ex.type || 'direta',
-      sets: finalSets.map(s=>({weight: s.weight, reps: s.reps, note: s.note || ''}))
+      sets: ex.sets.map(s=>({kind: s.kind || 'direta', weight: s.weight, reps: s.reps, note: s.note || '', done: !!s.done}))
     };
   });
 
@@ -1274,12 +1284,16 @@ function renderHistoryTab(){
   list.innerHTML = sessions.map(s=>{
     const totalVolume = s.exercises.reduce((acc,ex)=> acc + ex.sets.reduce((a,st)=> a + (parseFloat(st.weight)||0)*(parseFloat(st.reps)||0),0),0);
     const prNames = new Set((s.prs||[]).map(p=>p.exerciseName));
-    const exHtml = s.exercises.map(ex=>`
+    const exHtml = s.exercises.map(ex=>{
+      const hasMyo = ex.sets.some(st => st.kind === 'myo-main' || st.kind === 'myo-sub');
+      const touchedSets = ex.sets.filter(st => st.done || st.weight || st.reps);
+      return `
       <div style="margin-bottom:12px;">
-        <strong style="font-size:14px;">${escapeHtml(ex.exerciseName)} ${ex.type === 'myo-reps' ? '<span style="color:var(--accent); font-size:11px; margin-left:4px; font-weight:700;">[Myo-reps]</span>' : ''} ${prNames.has(ex.exerciseName) ? '<span class="pill" style="color:var(--accent); border-color:var(--accent); background:rgba(255,107,0,0.1);">🏆 PR</span>' : ''}</strong>
-        <div class="muted" style="font-size:13px; margin-top:4px;">${ex.sets.map(st=>`${st.weight||'-'}kg × ${st.reps||'-'}${st.note? ` <span style="color:var(--accent);font-style:italic;">(${escapeHtml(st.note)})</span>`:''}`).join(' <span style="color:var(--border)">|</span> ')}</div>
+        <strong style="font-size:14px;">${escapeHtml(ex.exerciseName)} ${hasMyo ? '<span style="color:var(--accent); font-size:11px; margin-left:4px; font-weight:700;">[Myo-reps]</span>' : ''} ${prNames.has(ex.exerciseName) ? '<span class="pill" style="color:var(--accent); border-color:var(--accent); background:rgba(255,107,0,0.1);">🏆 PR</span>' : ''}</strong>
+        <div class="muted" style="font-size:13px; margin-top:4px;">${touchedSets.map(st=>`${st.kind==='myo-sub'?'↳ ':''}${st.weight||'-'}kg × ${st.reps||'-'}${st.note? ` <span style="color:var(--accent);font-style:italic;">(${escapeHtml(st.note)})</span>`:''}`).join(' <span style="color:var(--border)">|</span> ')}</div>
       </div>
-    `).join('');
+    `;
+    }).join('');
     return `<div class="card" style="margin-bottom:16px;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
         <h3 style="font-size:17px;">${escapeHtml(s.workoutName)}</h3>
