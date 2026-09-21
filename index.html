@@ -135,6 +135,11 @@
   .dots-btn{font-size:20px; font-weight:bold; color:var(--muted); cursor:pointer; padding:4px 10px; border-radius:10px; border:none; background:transparent; flex:0 0 auto;}
   .dots-btn:hover{color:var(--text); background:rgba(255,255,255,0.08);}
 
+  .reorder-btns{display:flex; flex-direction:column; gap:2px; margin-right:2px; flex:0 0 auto;}
+  .reorder-btn{background:transparent; border:none; color:var(--muted); cursor:pointer; font-size:10px; padding:2px 5px; border-radius:5px; line-height:1;}
+  .reorder-btn:hover{color:var(--text); background:rgba(255,255,255,0.1);}
+  .reorder-btn:disabled{opacity:.2; cursor:default; pointer-events:none;}
+
   .dropdown-menu{
     position:absolute; right:0; top:36px; background:var(--dropdown-bg); border:1px solid var(--border);
     border-radius:14px; padding:8px; display:none; z-index:30; min-width:160px;
@@ -305,6 +310,18 @@
     <div class="row" style="margin-top:20px;">
       <button class="btn secondary" id="cancel-rename-workout">Cancelar</button>
       <button class="btn" id="confirm-rename-workout">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg hidden" id="modal-rename-exercise">
+  <div class="modal">
+    <h3>Renomear exercício</h3>
+    <label style="margin-top:12px;">Nome do exercício</label>
+    <input id="input-rename-exercise" placeholder="Ex: Supino Inclinado com Halteres" />
+    <div class="row" style="margin-top:20px;">
+      <button class="btn secondary" id="cancel-rename-exercise">Cancelar</button>
+      <button class="btn" id="confirm-rename-exercise">Salvar</button>
     </div>
   </div>
 </div>
@@ -596,6 +613,23 @@ document.getElementById('confirm-rename-workout').addEventListener('click', ()=>
   }
 });
 
+let editingExerciseData = null;
+document.getElementById('cancel-rename-exercise').addEventListener('click', ()=>hideModal('modal-rename-exercise'));
+document.getElementById('confirm-rename-exercise').addEventListener('click', ()=>{
+  const name = document.getElementById('input-rename-exercise').value.trim();
+  if(!name || !editingExerciseData) return;
+  const w = db.workouts.find(w=>w.id===editingExerciseData.workoutId);
+  if(w){
+    const ex = w.exercises.find(e=>e.id===editingExerciseData.exerciseId);
+    if(ex){
+      ex.name = name;
+      saveDB();
+      hideModal('modal-rename-exercise');
+      openWorkoutDetail(w.id);
+    }
+  }
+});
+
 let pendingExerciseWorkoutId = null;
 document.getElementById('cancel-new-exercise').addEventListener('click', ()=>hideModal('modal-new-exercise'));
 document.getElementById('confirm-new-exercise').addEventListener('click', ()=>{
@@ -616,18 +650,46 @@ function renderWorkoutsList(){
     list.innerHTML = `<div class="empty"><div class="big">🏋️</div>Nenhum treino criado ainda.<br>Toque em "+ Novo treino" para começar.</div>`;
     return;
   }
-  list.innerHTML = db.workouts.map(w=>{
+  list.innerHTML = db.workouts.map((w, idx)=>{
     const lastSession = lastSessionFor(w.id);
     return `<div class="workout-item" data-id="${w.id}">
-      <div>
-        <strong style="font-size:15px;">${escapeHtml(w.name)}</strong>
-        <div class="muted" style="margin-top:4px;">${w.exercises.length} exercício(s)${lastSession? ' · último: '+formatDate(lastSession.startedAt):''}</div>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div class="reorder-btns" onclick="event.stopPropagation();">
+          <button class="reorder-btn btn-move-workout-up" data-idx="${idx}" title="Mover para cima" ${idx===0?'disabled':''}>▲</button>
+          <button class="reorder-btn btn-move-workout-down" data-idx="${idx}" title="Mover para baixo" ${idx===db.workouts.length-1?'disabled':''}>▼</button>
+        </div>
+        <div>
+          <strong style="font-size:15px;">${escapeHtml(w.name)}</strong>
+          <div class="muted" style="margin-top:4px;">${w.exercises.length} exercício(s)${lastSession? ' · último: '+formatDate(lastSession.startedAt):''}</div>
+        </div>
       </div>
       <span class="pill">Ver →</span>
     </div>`;
   }).join('');
   list.querySelectorAll('.workout-item').forEach(el=>{
     el.addEventListener('click', ()=> openWorkoutDetail(el.dataset.id));
+  });
+  list.querySelectorAll('.btn-move-workout-up').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const idx = +btn.dataset.idx;
+      if(idx>0){
+        [db.workouts[idx-1], db.workouts[idx]] = [db.workouts[idx], db.workouts[idx-1]];
+        saveDB();
+        renderWorkoutsList();
+      }
+    });
+  });
+  list.querySelectorAll('.btn-move-workout-down').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const idx = +btn.dataset.idx;
+      if(idx < db.workouts.length-1){
+        [db.workouts[idx], db.workouts[idx+1]] = [db.workouts[idx+1], db.workouts[idx]];
+        saveDB();
+        renderWorkoutsList();
+      }
+    });
   });
 }
 function lastSessionFor(workoutId){
@@ -652,15 +714,19 @@ function openWorkoutDetail(workoutId){
   const activeSession = db.activeSession && db.activeSession.workoutId===workoutId ? db.activeSession : null;
   const lastSession = lastSessionFor(workoutId);
 
-  let exHtml = w.exercises.map(ex=>{
+  let exHtml = w.exercises.map((ex, exIdx)=>{
     normalizeSetsForExercise(ex);
     const lastData = lastSession ? findExerciseInSession(lastSession, ex.id) : null;
 
     let setsHtml = ex.sets.map((s,i)=>{
       const lastSet = lastData && lastData.sets[i] ? lastData.sets[i] : null;
       const inSession = !!activeSession;
-      const isMain = s.kind === 'myo-main';
-      const isSub = s.kind === 'myo-sub';
+      const isMyoMain = s.kind === 'myo-main';
+      const isMyoSub = s.kind === 'myo-sub';
+      const isClusterMain = s.kind === 'cluster-main';
+      const isClusterSub = s.kind === 'cluster-sub';
+      const isMain = isMyoMain || isClusterMain;
+      const isSub = isMyoSub || isClusterSub;
       const isLockedSet = isSub; // peso do bloco é sempre igual ao da série principal do grupo
 
       let placeholderW, placeholderR;
@@ -683,12 +749,13 @@ function openWorkoutDetail(workoutId){
         <div class="ghost-input-wrap">
           <input type="number" placeholder="${placeholderR}" value="${s.reps}" class="set-reps ghost-input" ${s.done ? 'disabled' : ''}>
         </div>
-        ${isMain ? `<span class="pill" style="color:var(--accent); border-color:var(--accent); background:rgba(255,107,0,0.1); font-size:10px; padding:2px 6px;">Myo</span>` : ''}
+        ${isMyoMain ? `<span class="pill" style="color:var(--accent); border-color:var(--accent); background:rgba(255,107,0,0.1); font-size:10px; padding:2px 6px;">Myo</span>` : ''}
+        ${isClusterMain ? `<span class="pill" style="color:#3b82f6; border-color:#3b82f6; background:rgba(59,130,246,0.1); font-size:10px; padding:2px 6px;">Cluster</span>` : ''}
         ${inSession ? `<button class="check-set-btn ${s.done?'checked':''}" title="Concluir série">✓</button>` : ''}
         <button class="icon-btn note-btn btn-toggle-note ${hasNote?'has-note':''}" title="Observação (RPE, falha, etc)">
           ${noteIcon}
         </button>
-        <button class="icon-btn btn-del-set" title="${isMain ? 'Excluir bloco de myo-reps' : 'Excluir série'}">
+        <button class="icon-btn btn-del-set" title="${isMyoMain ? 'Excluir bloco de myo-reps' : (isClusterMain ? 'Excluir cluster set' : 'Excluir série')}">
           ${trashIcon}
         </button>
       </div>
@@ -703,10 +770,15 @@ function openWorkoutDetail(workoutId){
 
     return `<div class="exercise-block" data-ex-id="${ex.id}">
       <div class="exercise-header">
-        <div>
-          <h3 style="display:inline-block; margin-0;">${escapeHtml(ex.name)}</h3>
+        <div style="display:flex; align-items:center; gap:8px; min-width:0;">
+          <div class="reorder-btns">
+            <button class="reorder-btn btn-move-ex-up" data-ex="${ex.id}" title="Mover para cima" ${exIdx===0?'disabled':''}>▲</button>
+            <button class="reorder-btn btn-move-ex-down" data-ex="${ex.id}" title="Mover para baixo" ${exIdx===w.exercises.length-1?'disabled':''}>▼</button>
+          </div>
+          <h3 style="margin:0; overflow-wrap:anywhere;">${escapeHtml(ex.name)}</h3>
         </div>
-        <div style="display:flex; align-items:center; gap:4px;">
+        <div style="display:flex; align-items:center; gap:4px; flex:0 0 auto;">
+          <button class="icon-btn btn-rename-ex" title="Renomear exercício">${editIcon}</button>
           <button class="icon-btn btn-del-ex" title="Remover exercício" style="color:var(--accent2);">${trashIcon}</button>
         </div>
       </div>
@@ -715,6 +787,7 @@ function openWorkoutDetail(workoutId){
       <div style="display:flex; gap:8px; margin-top:8px;">
         <button class="btn secondary btn-sm btn-add-set" style="flex:1;">+ Série</button>
         <button class="btn secondary btn-sm btn-add-myo" style="flex:1; color:var(--accent); border-color:rgba(255,107,0,0.35);">+ Myo-reps</button>
+        <button class="btn secondary btn-sm btn-add-cluster" style="flex:1; color:#3b82f6; border-color:rgba(59,130,246,0.35);">+ Cluster</button>
       </div>
     </div>`;
   }).join('');
@@ -851,11 +924,13 @@ function bindExerciseEvents(w){
 
       if(e.target.classList.contains('set-weight')) {
         ex.sets[idx].weight = e.target.value;
-        // Se essa série é o "main" de um bloco myo-reps, espelha o peso pros blocos (sub) seguintes do mesmo grupo
-        if(ex.sets[idx].kind === 'myo-main') {
+        // Se essa série é a "main" de um bloco (myo-reps ou cluster), espelha o peso pros blocos (sub) seguintes do mesmo grupo
+        const kind = ex.sets[idx].kind;
+        const subKind = kind === 'myo-main' ? 'myo-sub' : (kind === 'cluster-main' ? 'cluster-sub' : null);
+        if(subKind) {
           const currentVal = e.target.value;
           let sIdx = idx + 1;
-          while(sIdx < ex.sets.length && ex.sets[sIdx].kind === 'myo-sub') {
+          while(sIdx < ex.sets.length && ex.sets[sIdx].kind === subKind) {
             ex.sets[sIdx].weight = currentVal;
             const subInput = block.querySelector(`.set-row[data-set="${sIdx}"] .set-weight`);
             if(subInput) subInput.value = currentVal;
@@ -909,6 +984,11 @@ function bindExerciseEvents(w){
         if(kind === 'myo-main' || kind === 'myo-sub') {
           let duration = (kind === 'myo-main') ? 40 : 20;
           startInlineTimer(exId, idx, duration, ex.name);
+        } else if(kind === 'cluster-main' || kind === 'cluster-sub') {
+          // 20s entre os blocos do cluster; ao terminar a última das 4 séries, descanso normal
+          const isLastOfCluster = !(ex.sets[idx+1] && ex.sets[idx+1].kind === 'cluster-sub');
+          const duration = isLastOfCluster ? 90 : 20;
+          startInlineTimer(exId, idx, duration, ex.name);
         } else {
           startInlineTimer(exId, idx, 90, ex.name);
         }
@@ -943,19 +1023,77 @@ function bindExerciseEvents(w){
     });
   });
 
+  document.querySelectorAll('.btn-add-cluster').forEach(btn=>{
+    btn.addEventListener('click', e=>{
+      const block = e.target.closest('.exercise-block');
+      const exId = block.dataset.exId;
+      const ex = w.exercises.find(x=>x.id===exId);
+      // Cluster set: 4 séries interligadas (mesmo peso), com 20s de intervalo entre os blocos
+      ex.sets.push({reps:'',weight:'',done:false,note:'',kind:'cluster-main'});
+      for(let k=0;k<3;k++){
+        ex.sets.push({reps:'',weight:'',done:false,note:'',kind:'cluster-sub'});
+      }
+      saveDB();
+      openWorkoutDetail(w.id);
+    });
+  });
+
+  document.querySelectorAll('.btn-rename-ex').forEach(btn=>{
+    btn.addEventListener('click', e=>{
+      e.stopPropagation();
+      const block = e.target.closest('.exercise-block');
+      const exId = block.dataset.exId;
+      const ex = w.exercises.find(x=>x.id===exId);
+      if(!ex) return;
+      editingExerciseData = { workoutId: w.id, exerciseId: exId };
+      document.getElementById('input-rename-exercise').value = ex.name;
+      showModal('modal-rename-exercise');
+    });
+  });
+
+  document.querySelectorAll('.btn-move-ex-up').forEach(btn=>{
+    btn.addEventListener('click', e=>{
+      e.stopPropagation();
+      const exId = btn.dataset.ex;
+      const idx = w.exercises.findIndex(x=>x.id===exId);
+      if(idx>0){
+        [w.exercises[idx-1], w.exercises[idx]] = [w.exercises[idx], w.exercises[idx-1]];
+        saveDB();
+        openWorkoutDetail(w.id);
+      }
+    });
+  });
+
+  document.querySelectorAll('.btn-move-ex-down').forEach(btn=>{
+    btn.addEventListener('click', e=>{
+      e.stopPropagation();
+      const exId = btn.dataset.ex;
+      const idx = w.exercises.findIndex(x=>x.id===exId);
+      if(idx < w.exercises.length-1){
+        [w.exercises[idx], w.exercises[idx+1]] = [w.exercises[idx+1], w.exercises[idx]];
+        saveDB();
+        openWorkoutDetail(w.id);
+      }
+    });
+  });
+
   document.querySelectorAll('.btn-del-set').forEach(btn=>{
     btn.addEventListener('click', e=>{
       const row = e.target.closest('.set-row');
       const exId = row.dataset.ex, idx = +row.dataset.set;
       const ex = w.exercises.find(x=>x.id===exId);
-      const isMainSet = ex.sets[idx].kind === 'myo-main';
-      const msg = isMainSet
+      const kind = ex.sets[idx].kind;
+      const isMainSet = kind === 'myo-main' || kind === 'cluster-main';
+      const subKind = kind === 'myo-main' ? 'myo-sub' : (kind === 'cluster-main' ? 'cluster-sub' : null);
+      const msg = kind === 'myo-main'
         ? 'Tem certeza que deseja excluir este bloco de myo-reps (série principal + subséries)? Essa ação não pode ser desfeita.'
+        : kind === 'cluster-main'
+        ? 'Tem certeza que deseja excluir este cluster set (4 séries interligadas)? Essa ação não pode ser desfeita.'
         : 'Tem certeza que deseja excluir esta série? Essa ação não pode ser desfeita.';
       showConfirm('Excluir Série', msg, () => {
         if(isMainSet) {
           let end = idx;
-          while(end + 1 < ex.sets.length && ex.sets[end + 1].kind === 'myo-sub') end++;
+          while(end + 1 < ex.sets.length && ex.sets[end + 1].kind === subKind) end++;
           ex.sets.splice(idx, end - idx + 1);
         } else {
           ex.sets.splice(idx, 1);
@@ -1286,11 +1424,12 @@ function renderHistoryTab(){
     const prNames = new Set((s.prs||[]).map(p=>p.exerciseName));
     const exHtml = s.exercises.map(ex=>{
       const hasMyo = ex.sets.some(st => st.kind === 'myo-main' || st.kind === 'myo-sub');
+      const hasCluster = ex.sets.some(st => st.kind === 'cluster-main' || st.kind === 'cluster-sub');
       const touchedSets = ex.sets.filter(st => st.done || st.weight || st.reps);
       return `
       <div style="margin-bottom:12px;">
-        <strong style="font-size:14px;">${escapeHtml(ex.exerciseName)} ${hasMyo ? '<span style="color:var(--accent); font-size:11px; margin-left:4px; font-weight:700;">[Myo-reps]</span>' : ''} ${prNames.has(ex.exerciseName) ? '<span class="pill" style="color:var(--accent); border-color:var(--accent); background:rgba(255,107,0,0.1);">🏆 PR</span>' : ''}</strong>
-        <div class="muted" style="font-size:13px; margin-top:4px;">${touchedSets.map(st=>`${st.kind==='myo-sub'?'↳ ':''}${st.weight||'-'}kg × ${st.reps||'-'}${st.note? ` <span style="color:var(--accent);font-style:italic;">(${escapeHtml(st.note)})</span>`:''}`).join(' <span style="color:var(--border)">|</span> ')}</div>
+        <strong style="font-size:14px;">${escapeHtml(ex.exerciseName)} ${hasMyo ? '<span style="color:var(--accent); font-size:11px; margin-left:4px; font-weight:700;">[Myo-reps]</span>' : ''} ${hasCluster ? '<span style="color:#3b82f6; font-size:11px; margin-left:4px; font-weight:700;">[Cluster]</span>' : ''} ${prNames.has(ex.exerciseName) ? '<span class="pill" style="color:var(--accent); border-color:var(--accent); background:rgba(255,107,0,0.1);">🏆 PR</span>' : ''}</strong>
+        <div class="muted" style="font-size:13px; margin-top:4px;">${touchedSets.map(st=>`${(st.kind==='myo-sub'||st.kind==='cluster-sub')?'↳ ':''}${st.weight||'-'}kg × ${st.reps||'-'}${st.note? ` <span style="color:var(--accent);font-style:italic;">(${escapeHtml(st.note)})</span>`:''}`).join(' <span style="color:var(--border)">|</span> ')}</div>
       </div>
     `;
     }).join('');
