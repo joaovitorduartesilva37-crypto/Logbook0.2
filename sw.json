@@ -1,0 +1,29 @@
+{
+  "name": "LogBook - Treinos",
+  "short_name": "LogBook",
+  "description": "Rastreador de treinos, progressão de cargas, Myo-reps e Cluster sets.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./favicon.webp",
+      "sizes": "64x64",
+      "type": "image/webp"
+    },
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
